@@ -1,0 +1,167 @@
+---
+title: "Synthetic Data Generation: SDSS 2022 Short Course"
+author: "Joshua Snoke"
+date: '2022-06-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(synthpop)
+
+set.seed(405323)
+```
+
+## I-CEM 1901 Scottish Census Data Example
+
+For this code, we will use a portion of the 1901 Scottish Census. Thanks to the SYLLS and the synthpop team for preparing and sharing this file, which can be found at: https://synthpop.org.uk/resources.html.
+
+NOTE: synthpop does not work well with the tidyverse, so I will be using traditional R instead.
+
+```{r ICEM data}
+load('i-cem.rdata')
+## let's just work with a subset of the variables
+icem_data = data[, c('sex',
+                     'age',
+                     'mar_stat',
+                     'disability',
+                     'employ',
+                     'ctry_bth',
+                     'hsize',
+                     'totrooms',
+                     'pperroom')]
+rm(data)
+
+head(icem_data,
+     n = 10)
+```
+
+## Simple Synthesis Model
+
+First, let's produce a simple synthetic data set for just a few demographic variables in the data.
+
+```{r simple synthesis}
+
+simple_icem = icem_data[icem_data$mar_stat != 'Divorced', 
+                        c('sex',
+                          'age',
+                          'mar_stat',
+                          'employ')]
+## Here is the syntax
+synthetic_icem = syn(simple_icem,
+                     ## Here we will tell it to use sequential parametric models
+                     method = 'parametric')
+
+## A few outputs of interest
+synthetic_icem$method
+synthetic_icem$visit.sequence
+synthetic_icem$predictor.matrix
+
+## We can change the visit.sequence (order of synthesized variables)
+synthetic_icem_2 = syn(simple_icem,
+                       method = 'parametric',
+                       ## Here we change the order of synthesis
+                       visit.sequence = c('employ', 'age', 'mar_stat', 'sex'))
+
+## A few outputs of interest
+synthetic_icem_2$method
+synthetic_icem_2$visit.sequence
+synthetic_icem_2$predictor.matrix
+
+## We can use non-parametric CART models instead of GLMs 
+synthetic_icem_3 = syn(simple_icem,
+                       ## Here we will tell it to use sequential CART models
+                       method = 'cart')
+
+## A few outputs of interest
+synthetic_icem_3$method
+synthetic_icem_3$visit.sequence
+synthetic_icem_3$predictor.matrix
+
+```
+
+## Utility Evaluation
+
+```{r utility measures}
+
+## We can compare the marginal distributions between the confidential data and synthetic data
+compare(synthetic_icem, simple_icem)
+
+## We can also get visuals of multivariate distributions
+multi.compare(synthetic_icem, simple_icem, var = "employ", by = c("sex", "mar_stat"))
+
+## If we want to compare the fit of a linear model, we can use the following function
+## outcome is whether individual is an employer (rather than a worker or unemployed)
+icem_fit = glm(I(employ == 'E') ~ ., data = simple_icem, family = "binomial")  
+summary(icem_fit)
+
+
+# Now with synthetic data
+## just main effects
+synthetic_icem_fit = glm.synds(I(employ == 'E') ~ ., data = synthetic_icem, family = "binomial")  
+
+## we can get the estimated coefficients and standard errors for the synthetic model
+summary(synthetic_icem_fit)
+
+
+## we can compare the models visually and based on their point estimates and confidence intervals
+## note that the confidential data, not the confidential glm object, is provided
+compare(synthetic_icem_fit, simple_icem)
+
+
+```
+
+
+## Some Other Useful Synthesis Options
+
+Lastly, we cover a couple common options that you may use when synthesizing data. First, creating new methods for variables that are constructed based on other variables. Second, increasing the number of levels of a factor variable.
+
+```{r other options}
+
+## we first create an object to say the type of synthesis for each variable
+## default is CART for all variables
+synthetic_method = rep('cart', ncol(icem_data)) 
+## it needs to be named with the corresponding variable names
+names(synthetic_method) = colnames(icem_data)
+## but we change pperroom to be just hsize divided by totrooms for consistency in the data
+synthetic_method[names(synthetic_method) == "pperroom"] <- "~I(hsize[!is.na(totrooms)] / totrooms[!is.na(totrooms)])"
+
+
+## country of birth has a lot of levels, so we set the maxfaclevels to be larger enough
+## note that this can slow down the synthesis, especially if using parametric models
+synthetic_expanded_icem = syn(icem_data,
+                              ## using our predefined methods object
+                              method = synthetic_method,
+                              maxfaclevels = 60)
+
+synthetic_expanded_icem$method
+
+## we can check that the synthesis rule worked as it should have
+summary(synthetic_expanded_icem$syn$hsize / synthetic_expanded_icem$syn$totrooms - 
+          synthetic_expanded_icem$syn$pperroom)
+
+## we can look at the results for this expanded synthesis
+compare(synthetic_expanded_icem, icem_data)
+
+```
+
+## Try One or More of the Following Yourself
+
+1. Compare the synthetic data to the confidential data using the 'multi.compare' function or compare the fit of GLM models using the synthetic data and confidential data.
+
+2. The following variables combine to make the hsize: 
+  - nfamgteq15 
+  - nfamlt15
+  - nboarders
+  - nlodgers
+  - nvisitors
+  - nkn
+  - nservants
+  
+  Produce a synthetic data sets that synthesizes these variables and then creates the hsize variable, so that it is consistent.
+
+3. The variables occlab1, occlab2, occlab3 are nested occupation labels. Synthesis them using the nested method (for example for occlab2 nested within occlab1 use the method 'nested.occlab1')
+
+4. Or use your own data!
+
+

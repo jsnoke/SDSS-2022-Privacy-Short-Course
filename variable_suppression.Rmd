@@ -1,0 +1,188 @@
+---
+title: "Variable Suppression and Recoding: SDSS 2022 Short Course"
+author: "Joshua Snoke"
+date: '2022-06-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
+```
+
+## Simulated Data Example
+
+Start by loading in a simulated data set of a teacher survey. The file contains individual and school characteristics. Print out the first 25 rows to get an idea of the variables.
+
+```{r survey data}
+simulated_survey_data = read_csv('simulated_suppression_data.csv',
+                                 show_col_types = FALSE) %>%
+  mutate_all(as.factor)
+print(simulated_survey_data,
+      n = 25)
+```
+
+We can also tabulate the variables to get an idea of the distributions.
+
+```{r data summary}
+summary(simulated_survey_data,
+        maxsum = 8)
+```
+
+## Identification Risk Among the Sample
+
+First, let's look just at frequencies of characteristics among those in the survey. We have a lot of characteristics, so the majority of teachers are unique if we used every variable and level as provided.
+
+```{r survey freq trivial}
+trivial_freq = simulated_survey_data %>%
+  ## here we are computing all combinations of the characteristics
+  group_by_all() %>%
+  summarize(freq = n())
+
+table(trivial_freq$freq)
+
+## We can also plot the frequencies
+ggplot(trivial_freq, aes(x = freq)) + 
+  geom_histogram(binwidth = 1) +
+  theme_bw()
+
+## We can calculate risk based on 1 / Freq
+summary(1 / trivial_freq$freq)
+
+```
+
+State is a pretty identifying characteristic, so let's see what happens when we suppress the state variable.
+
+```{r survey freq no state}
+no_state_freq = simulated_survey_data %>%
+  ## here we are dropping state from our calculations (i.e., suppressing it)
+  group_by_at(vars(-State)) %>%
+  summarize(freq = n())
+
+ggplot(no_state_freq, aes(x = freq)) + 
+  geom_histogram(binwidth = 1) +
+  theme_bw()
+
+## how many teachers are still unique?
+sum(no_state_freq$freq == 1)
+
+## Risk has dropped but is still high
+summary(1 / no_state_freq$freq)
+
+
+```
+
+We want to do more, so let's collapse some of the small levels for Race, Experience, and School Size
+
+```{r survey freq collapsed}
+no_state_collapsed_freq = simulated_survey_data %>%
+  ## here we collapse levels for Race and Experience
+  mutate(Race = recode(Race,
+                       `AIAN` = 'Other',
+                       `NHPI` = 'Other',
+                       `Asian` = 'Other',
+                       `Multirace` = 'Other',
+                       `Black` = 'Other',
+                       `Hispanic` = 'Other'),
+         Experience = recode(Experience,
+                             `Lessthan3` = 'Lessthan10',
+                             `3to9` = 'Lessthan10'),
+         School_Size = recode(School_Size,
+                              `Lessthan250` = 'Lessthan500',
+                              `250to499` = 'Lessthan500')) %>%
+  ## here we still drop state from our calculations (i.e., suppressing it)
+  group_by_at(vars(-State)) %>%
+  summarize(freq = n())
+
+ggplot(no_state_collapsed_freq, aes(x = freq)) + 
+  geom_histogram(binwidth = 1) +
+  theme_bw()
+
+## how many teachers are still unique?
+sum(no_state_collapsed_freq$freq == 1)
+
+## Risk has dropped again but is still high
+summary(1 / no_state_collapsed_freq$freq)
+
+
+```
+
+
+## Identification Risk with Population Frequencies
+
+Now, let's assume that participation in the survey is not known. In this case, we need to factor in the likelihood that an individual was sampled into the survey. We do this using population frequencies.
+
+```{r population data}
+simulated_population = read_csv('simulated_suppression_population.csv',
+                                show_col_types = FALSE) %>%
+  mutate_at(vars(-pop_total), as.factor)
+
+```
+
+We calculate risk using both the survey frequencies and the population frequencies.
+
+```{r population freq trivial}
+
+## survey freq are the same as before
+trivial_pop_freq = simulated_survey_data %>%
+  ## here we are computing all combinations of the characteristics
+  group_by_all() %>%
+  summarize(freq = n()) %>%
+  ## merge with population freq
+  left_join(simulated_population) %>%
+  ## Risk is now based on the population frequencies
+  mutate(risk = 1 / pop_total,
+         sample_unique = freq == 1)
+
+## Risk is now the multiplication of the two
+summary(trivial_pop_freq$risk)
+## Much lower than before, but still some population uniques
+sum(trivial_pop_freq$pop_total == 1)
+
+```
+
+If we drop state and Race in this case, our risk is substantially lower.
+
+```{r population freq no state}
+
+## survey freq are the same as before
+no_state_pop_freq = simulated_survey_data %>%
+  ## here we are computing all combinations of the characteristics
+  group_by_at(vars(-State, 
+                   -Race)) %>%
+  summarize(freq = n()) %>%
+  ## merge with population freq that are calculated based on dropped variables
+  left_join(simulated_population %>%
+              group_by_at(vars(-State, 
+                               -Race, 
+                               -pop_total)) %>%
+              summarize(pop_total = sum(pop_total))) %>%
+  ## Risk is now based on the population frequencies
+  mutate(risk = 1 / pop_total,
+         sample_unique = freq == 1)
+
+summary(no_state_pop_freq$risk)
+## No longer any population uniques
+sum(no_state_pop_freq$pop_total == 1)
+
+## we can visual risk values against the population totals
+ggplot(no_state_pop_freq, aes(y = risk, x = pop_total)) + 
+  geom_point(size = 2) +
+  theme_bw()
+
+```
+
+## Try One or More of the Following Yourself
+
+1. Produce a combination of variables/levels with max risk less than 0.1.
+
+2. Produce a combination of variables/levels with mean risk less than 0.01
+
+3. Produce a combination of variables/levels with total risk less than 1.
+
+4. Or use your own data!
+
+
+
+

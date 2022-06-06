@@ -1,0 +1,214 @@
+---
+title: "Differential Privacy for Counts: SDSS 2022 Short Course"
+author: "Joshua Snoke"
+date: '2022-06-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
+
+set.seed(157086)
+```
+
+## Laplace Mechanism
+
+This code will use the Laplace mechanism to perturb counts. The noisy counts released satisfy epsilon-DP.
+
+First, we introduce a simple function to add noise according to the Laplace mechanism. The function takes two inputs. (1) The desired level of privacy loss (epsilon) and the global sensitivity (for this example we will assume this is 1). This inputs determine the scale parameter (variance) of the noise added.
+
+```{r Laplace mechanism}
+
+lap_mech <- function(rep, eps, gs) {
+  
+  # Checking for proper values
+  if (any(eps <= 0)) {
+    stop("The eps must be positive.")
+  }
+  if (any(gs <= 0)) {
+    stop("The GS must be positive.")
+  }
+  
+  # Calculating the scale
+  scale <- gs / eps
+  
+  r <- runif(1)
+  
+  if(r > 0.5) {
+    r2 <- 1 - r
+    x <- 0 - sign(r - 0.5) * scale * log(2 * r2)
+  } else {
+    x <- 0 - sign(r - 0.5) * scale * log(2 * r)
+  }
+  
+  return(x)
+}
+
+## wrapper function to make multiple draws (for multiple counts)
+lap_mech_wrapper = function(n, eps, gs){
+  sapply(1:n, lap_mech, eps = eps, gs = gs)
+}
+```
+
+## Simulated Data Example
+
+Now let's load in a simulated data set of COVID cases and deaths by county. Print out the first 10 rows to get an idea of the variables.
+
+```{r dp data}
+simulated_dp_data = read_csv('simulated_dp_data.csv',
+                             show_col_types = FALSE) %>%
+  mutate_at(vars(county, race, sex), as.factor)
+print(simulated_dp_data,
+      n = 10)
+
+summary(simulated_dp_data)
+```
+
+We can look at total cases by county.
+
+```{r different tabulations}
+simulated_dp_data %>%
+  group_by(date, county) %>%
+  summarize_at(vars(group_cases, group_population), sum) %>%
+  ggplot(aes(x = date, y = group_cases / group_population * 100, color = county)) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'top') +
+  ylab('Cases per Population (%)')
+
+## Or maybe we want to look at it broken down by race - lots of small numbers here!
+simulated_dp_data %>%
+  group_by(date, county, race) %>%
+  summarize_at(vars(group_cases, group_population), sum) %>%
+  ggplot(aes(x = date, y = group_cases / group_population * 100, color = county)) +
+  geom_line() +
+  facet_wrap(~race) +
+  theme_bw() +
+  theme(legend.position = 'top') +
+  ylab('Cases per Population (%)')
+```
+
+
+## Adding Noise to Satisfy epsilon-Differential Privacy
+
+Let's add noise to the county counts for January 15th. Because each county is a disjoint subset of the data (we assume), we can use the same value of epsilon when adding noise to each count (parallel composition).
+
+```{r jan 15 noise}
+noisy_counts = simulated_dp_data %>%
+  filter(date == '2022-01-15') %>%
+  group_by(county) %>%
+  summarize_at(vars(group_cases), sum)
+
+## We can add noise to each county count with the same epsilon because these are disjoint queries
+## Epsilon = 1 and the Sensitivity = 1
+noisy_counts$noisy_cases_1 = noisy_counts$group_cases + lap_mech_wrapper(nrow(noisy_counts), eps = 1, gs = 1)
+
+## We compare the original case counts with the noisy counts
+noisy_counts
+
+## We are adding noise with the same error distribution to all counties, so we expect those with smaller counts will have more relative error
+noisy_counts %>%
+  ggplot(aes(x = group_cases, y = (noisy_cases_1 - group_cases) / group_cases * 100)) +
+  geom_point() +
+  theme_bw() +
+  ylab('Relative Error in Case Counts (%)') +
+  xlab('Confidential County Case Count')
+
+## Let's change epsilon and see how this changes the error
+
+## Epsilon = 1
+noisy_counts$noisy_cases_01 = noisy_counts$group_cases + lap_mech_wrapper(nrow(noisy_counts), eps = 0.1, gs = 1)
+noisy_counts$noisy_cases_05 = noisy_counts$group_cases + lap_mech_wrapper(nrow(noisy_counts), eps = 0.5, gs = 1)
+noisy_counts$noisy_cases_10 = noisy_counts$group_cases + lap_mech_wrapper(nrow(noisy_counts), eps = 10, gs = 1)
+
+## We compare the original case counts with the noisy counts
+noisy_counts
+
+## We are adding noise with the same error distribution to all counties, so those with smaller counts will have larger relative error
+noisy_counts %>%
+  pivot_longer(3:6, names_to = 'epsilon', values_to = 'noisy_cases') %>%
+  mutate(epsilon = factor(as.numeric(recode(sub('noisy_cases_', '', epsilon),
+                                           `01` = '0.1',
+                                           `05` = '0.5')))) %>%
+  ggplot(aes(x = group_cases, y = (noisy_cases - group_cases) / group_cases * 100)) +
+  facet_wrap(~epsilon, scales = 'free') +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'top') +
+  scale_color_brewer(type = 'qual', 
+                     palette = 6) +
+  ylab('Relative Error in Case Counts (%)') +
+  xlab('Confidential County Case Count')
+```
+
+
+## Sequential Queries
+
+Suppose now that we want to query the daily county cases over a period of a week. Because we are repeating queries on the same counties we need to split epsilon over the 7 queries (sequential composition). As before, we do not need to split epsilon across counties.
+
+
+```{r jan 15-22 noise}
+noisy_counts = simulated_dp_data %>%
+  filter(date >= '2022-01-15',
+         date <= '2022-01-21') %>%
+  group_by(county, date) %>%
+  summarize_at(vars(group_cases), sum)
+
+## We can add noise to each county count with the same epsilon because these are disjoint queries
+## Epsilon = 1 (divided over seven days) and the Sensitivity = 1
+noisy_counts$noisy_cases_1 = noisy_counts$group_cases + lap_mech_wrapper(nrow(noisy_counts), eps = 1 / 7, gs = 1)
+
+## We compare the original case counts with the noisy counts
+noisy_counts
+
+## We are adding noise with the same error distribution to all counties, so we expect those with smaller counts will have more relative error
+noisy_counts %>%
+  filter(county %in% c('1', '59')) %>%
+  pivot_longer(3:4, names_to = 'Case Type', values_to = 'Case Count') %>%
+  ggplot(aes(x = date, y = `Case Count`, color = `Case Type`)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~county, scales = 'free') +
+  theme_bw() +
+  theme(legend.position = 'top') +
+  scale_color_brewer(labels = c('Confidential Cases',
+                                'Noisy Cases'),
+                     type = 'qual', 
+                     palette = 6) +
+  ylab('Case Count') +
+  xlab('Date')
+
+## What is the relative error in the total counts by County over the week?
+noisy_counts %>% 
+  group_by(county) %>%
+  summarize(weekly_relative_error = (sum(noisy_cases_1) - sum(group_cases)) / sum(group_cases) * 100)
+```
+
+
+## Try One or More of the Following Yourself
+
+1. Produce noisy county counts for January 15th for every racial/ethnicity and gender combination. Use a total of epsilon = 1. Should epsilon be divided?
+
+2. Produce noisy counts for County 1 for the entire date range in the data. What total level of epsilon do you need to use for the County to have less than 10% relative error in the counts? Plot the results.
+
+3. Produce the following noisy counts for January 15th: 
+  (a) Total counts by county
+  (b) Female counts by county
+  (c) Male counts by county
+  (d) White counts by county
+  (e) Non-White counts by county
+
+What would you use to get these noisy counts? Use epsilon = 1, splitting it as necessary.
+
+4. Or use your own data!
+
+
+
+
+
+
+
+
+
