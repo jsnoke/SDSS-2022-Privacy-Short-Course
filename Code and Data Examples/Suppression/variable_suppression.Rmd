@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-options(dplyr.summarise.inform = FALSE)
+™options(dplyr.summarise.inform = FALSE)
 ```
 
 ## Simulated Data Example
